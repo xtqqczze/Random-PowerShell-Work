@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 2.0
+.VERSION 1.6
 
 .GUID b787dc5d-8d11-45e9-aeef-5cf3a1f690de
 
@@ -24,68 +24,93 @@
 	time the process returns an exit code other than 0, treat it as an error.
 
 #> 
-param()
 
 function Invoke-Process {
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(
+		SupportsShouldProcess = $true
+	)]
     param (
-        [Parameter(Mandatory)]
+        [Parameter(
+            Mandatory = $true,
+            Position = 0,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $true
+        )]
         [ValidateNotNullOrEmpty()]
+        [Alias('PSPath', 'Path')]
         [string]$FilePath,
+
+        [Parameter(
+            Mandatory = $false,	
+            Position = 1,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $true
+        )]
+        [ValidateNotNullOrEmpty()]
+        [Alias('Args', 'Arguments')]
         [string[]]$ArgumentList
     )
+	
+    begin {
+        $savedErrorActionPreference = $ErrorActionPreference
+		$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
-    $ErrorActionPreference = 'Stop'
+		function RemoveLastNewLine([string]$text, $nl = [System.Environment]::NewLine)
+		{
+			if ($text.EndsWith($nl))
+			{
+				return $text.Remove($text.Length - $nl)
+			}
+			else {
+				return $text
+			}
+		}
+    }
 
-    try {
-        $stdOutTempFile = "$env:TEMP\$(( New-Guid ).Guid)"
-        $stdErrTempFile = "$env:TEMP\$(( New-Guid ).Guid)"
+    process {
+        try {
+            $p = New-Object -TypeName 'System.Diagnostics.Process'
+			$p.StartInfo.Filename = $FilePath
+			# TODO: Add arguments explicitly
+            $p.StartInfo.Arguments = $ArgumentList
+            $p.StartInfo.RedirectStandardOutput = $true
+            $p.StartInfo.RedirectStandardError = $true
+            $p.StartInfo.UseShellExecute = $false
+			$p.StartInfo.CreateNoWindow = $true
+			
+			$target = "`"$($p.StartInfo.Filename)`"" +
+			$(if (-not [string]::IsNullOrEmpty($p.StartInfo.Arguments)) {
+				' ' + $p.StartInfo.Arguments
+			})
 
-        $startProcessParams = @{
-            FilePath               = $FilePath
-            RedirectStandardError  = $stdErrTempFile
-            RedirectStandardOutput = $stdOutTempFile
-            Wait                   = $true
-            PassThru               = $true
-            NoNewWindow            = $true
+            if ($PSCmdlet.ShouldProcess($target, "Invoke-Process")) {
+                $p.Start() > $null
+				$p.WaitForExit()
+				return $p.StandardOutput.ReadToEnd()
+                if ($p.ExitCode -eq 0) {
+                    if (-not $p.StandardOutput.EndOfStream) {
+                        Write-Output -InputObject (RemoveLastNewLine($p.StandardOutput.ReadToEnd()))
+                    }
+                }
+                else {
+                    if (-not $p.StandardError.EndOfStream) {
+                        throw RemoveLastNewLine($p.StandardError.ReadToEnd())
+                    }
+                    elseif (-not $p.StandardOutput.EndOfStream) {
+                        throw RemoveLastNewLine($p.StandardOutput.ReadToEnd())
+                    }
+                    else {
+                        throw $p.ExitCode
+                    }
+                }
+            }
         }
-        if ($PSCmdlet.ShouldProcess("Process [$($FilePath)]", "Run with args: [$($ArgumentList)]")) {
-            if ($ArgumentList) {
-                Write-Verbose -Message "$FilePath $ArgumentList"
-                $cmd = Start-Process @startProcessParams -ArgumentList $ArgumentList
-            }
-            else {
-                Write-Verbose $FilePath
-                $cmd = Start-Process @startProcessParams
-            }
-            $stdOut = Get-Content -Path $stdOutTempFile -Raw
-            $stdErr = Get-Content -Path $stdErrTempFile -Raw
-            if ([string]::IsNullOrEmpty($stdOut) -eq $false) {
-                $stdOut = $stdOut.Trim()
-            }
-            if ([string]::IsNullOrEmpty($stdErr) -eq $false) {
-                $stdErr = $stdErr.Trim()
-            }
-            $return = [PSCustomObject]@{
-                Name     = $cmd.Name
-                Id       = $cmd.Id
-                ExitCode = $cmd.ExitCode
-                Output   = $stdOut
-                Error    = $stdErr
-            }
-            if ($return.ExitCode -ne 0) {
-                throw $return
-            }
-            else {
-                $return
-            }
+        catch {
+            $PSCmdlet.ThrowTerminatingError($_)
         }
     }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-    finally {
-        Remove-Item -Path $stdOutTempFile, $stdErrTempFile -Force -ErrorAction Ignore
+
+    end {
+        $ErrorActionPreference = $savedErrorActionPreference
     }
 }
-
